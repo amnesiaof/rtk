@@ -259,6 +259,7 @@ execFile(rtkBin, ["rewrite", command], { encoding: "utf8", timeout: 3000, window
     input.command = output
   }
 })
+```
 
 ### Hermes (Python Plugin)
 

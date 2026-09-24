@@ -253,12 +253,17 @@ The `allow` value is required by Codex to accept `updatedInput`; Codex still run
 Mutates command in-place via `node:child_process.execFile` (supports OpenCode 2.0 and 1.x):
 
 ```typescript
-execFile(rtkBin, ["rewrite", command], { encoding: "utf8", timeout: 3000, windowsHide: true }, (_err, stdout) => {
-  const output = String(stdout ?? "").trim()
-  if (output && output !== command) {
-    input.command = output
-  }
-})
+const tool = String(input?.tool ?? "").toLowerCase()
+if (tool === "bash" || tool === "shell") {
+  execFile(rtkBin, ["rewrite", command], { encoding: "utf8", timeout: 3000, windowsHide: true }, (err, stdout) => {
+    if (!err || (err as any).code === 3) {
+      const output = String(stdout ?? "").trim()
+      if (output && output !== command) {
+        args.command = output
+      }
+    }
+  })
+}
 ```
 
 ### Hermes (Python Plugin)

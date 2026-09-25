@@ -10,55 +10,42 @@ export function _resetCachedRtkPath(): void {
 }
 
 export function expandHome(filepath: string): string {
-  if (filepath === "~" || filepath.startsWith("~/") || filepath.startsWith("~\\")) {
-    return join(homedir(), filepath.slice(1))
-  }
-  return filepath
+  return /^~[/\\]?/.test(filepath)
+    ? join(homedir(), filepath.replace(/^~[/\\]?/, ""))
+    : filepath
 }
 
 /**
  * Resolves the rtk binary from RTK_BIN, standard PATH, or common installation directories.
  */
 export function resolveRtkPath(): string | null {
-  if (cachedRtkPath && existsSync(cachedRtkPath)) {
-    return cachedRtkPath
-  }
+  if (cachedRtkPath && existsSync(cachedRtkPath)) return cachedRtkPath
 
   const envBin = process.env.RTK_BIN
   if (envBin) {
     const expanded = expandHome(envBin)
-    if (existsSync(expanded)) {
-      cachedRtkPath = expanded
-      return expanded
-    }
+    if (existsSync(expanded)) return (cachedRtkPath = expanded)
   }
 
-  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean)
-  const home = homedir()
-  const extraDirs = [
-    join(home, ".local", "bin"),
-    join(home, ".cargo", "bin"),
+  const dirs = [
+    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
+    join(homedir(), ".local", "bin"),
+    join(homedir(), ".cargo", "bin"),
     "/opt/homebrew/bin",
     "/usr/local/bin",
   ]
-  const allDirs = [...dirs, ...extraDirs]
-  const exts =
-    process.platform === "win32"
-      ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
-      : [""]
+  const exts = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
+    : [""]
 
-  for (const dir of allDirs) {
+  for (const dir of dirs) {
     for (const ext of exts) {
       const fullPath = join(dir, `rtk${ext}`)
-      if (existsSync(fullPath)) {
-        cachedRtkPath = fullPath
-        return fullPath
-      }
+      if (existsSync(fullPath)) return (cachedRtkPath = fullPath)
     }
   }
 
-  cachedRtkPath = null
-  return null
+  return (cachedRtkPath = null)
 }
 
 /**
@@ -76,30 +63,16 @@ export function runRtkRewrite(
     execFile(
       rtkBin,
       ["rewrite", command],
-      {
-        encoding: "utf8",
-        timeout: timeoutMs,
-        windowsHide: true,
-      },
+      { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
       (error, stdout) => {
-        // Discard any partial stdout on timeout or kill signals
         if (error) {
-          if (error.killed || Boolean(error.signal)) {
-            return resolve(null)
-          }
-
+          if (error.killed || Boolean(error.signal)) return resolve(null)
           const exitCode = (error as unknown as { code?: number | string }).code
-          if (exitCode !== 3) {
-            return resolve(null)
-          }
+          if (exitCode !== 3) return resolve(null)
         }
 
         const output = String(stdout ?? "").trim()
-        if (output && output !== command) {
-          resolve(output)
-        } else {
-          resolve(null)
-        }
+        resolve(output && output !== command ? output : null)
       }
     )
   })
@@ -110,8 +83,9 @@ export async function tryRewriteCommand(
   command: unknown
 ): Promise<string | null> {
   const tool = String(toolName ?? "").toLowerCase()
-  if (tool !== "bash" && tool !== "shell") return null
-  if (typeof command !== "string" || !command.trim()) return null
+  if ((tool !== "bash" && tool !== "shell") || typeof command !== "string" || !command.trim()) {
+    return null
+  }
 
   const rtkBin = resolveRtkPath()
   if (!rtkBin) return null
@@ -121,6 +95,18 @@ export async function tryRewriteCommand(
   } catch {
     return null
   }
+}
+
+async function handleToolHook(tool: unknown, container: any, key: "command") {
+  if (!container || typeof container !== "object") return
+  const rewritten = await tryRewriteCommand(String(tool ?? ""), container[key])
+  if (rewritten) container[key] = rewritten
+}
+
+function warnMissingRtk(): boolean {
+  const found = Boolean(resolveRtkPath())
+  if (!found) console.warn("[rtk] rtk binary not found — plugin disabled")
+  return found
 }
 
 /**
@@ -133,41 +119,15 @@ const RtkOpenCodePlugin = {
 
   // OpenCode 2.x entrypoint
   async setup(ctx: any) {
-    if (!resolveRtkPath()) {
-      console.warn("[rtk] rtk binary not found — plugin disabled")
-      return
-    }
-
-    if (ctx?.tool?.hook) {
-      await ctx.tool.hook("execute.before", async (event: any) => {
-        const input = event?.input
-        if (!input || typeof input !== "object") return
-
-        const rewritten = await tryRewriteCommand(event?.tool, input.command)
-        if (rewritten) {
-          input.command = rewritten
-        }
-      })
-    }
+    if (!warnMissingRtk()) return
+    await ctx?.tool?.hook?.("execute.before", (e: any) => handleToolHook(e?.tool, e?.input, "command"))
   },
 
   // OpenCode 1.x entrypoint (supported via dual-shape in 1.18.29+)
   async server() {
-    if (!resolveRtkPath()) {
-      console.warn("[rtk] rtk binary not found — plugin disabled")
-      return {}
-    }
-
+    if (!warnMissingRtk()) return {}
     return {
-      "tool.execute.before": async (input: any, output: any) => {
-        const args = output?.args
-        if (!args || typeof args !== "object") return
-
-        const rewritten = await tryRewriteCommand(input?.tool, args.command)
-        if (rewritten) {
-          args.command = rewritten
-        }
-      },
+      "tool.execute.before": (input: any, output: any) => handleToolHook(input?.tool, output?.args, "command"),
     }
   },
 }

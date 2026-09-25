@@ -66,7 +66,7 @@ export function runRtkRewrite(
       { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
       (error, stdout) => {
         if (error) {
-          if (error.killed || Boolean(error.signal)) return resolve(null)
+          if (error.killed || error.signal) return resolve(null)
           const exitCode = (error as unknown as { code?: number | string }).code
           if (exitCode !== 3) return resolve(null)
         }

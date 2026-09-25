@@ -5,7 +5,11 @@ import { delimiter, join } from "node:path"
 
 let cachedRtkPath: string | null = null
 
-function expandHome(filepath: string): string {
+export function _resetCachedRtkPath(): void {
+  cachedRtkPath = null
+}
+
+export function expandHome(filepath: string): string {
   if (filepath === "~" || filepath.startsWith("~/") || filepath.startsWith("~\\")) {
     return join(homedir(), filepath.slice(1))
   }
@@ -72,7 +76,11 @@ export function runRtkRewrite(
     execFile(
       rtkBin,
       ["rewrite", command],
-      { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
+      {
+        encoding: "utf8",
+        timeout: timeoutMs,
+        windowsHide: true,
+      },
       (error, stdout) => {
         // Discard any partial stdout on timeout or kill signals
         if (error) {
@@ -80,8 +88,6 @@ export function runRtkRewrite(
             return resolve(null)
           }
 
-          // In Node child_process, error.code can be a number (exit code) or string (e.g. 'ENOENT').
-          // rtk returns 3 for valid Ask/Default rewrites. Reject all other non-zero codes (1, 2, etc.).
           const exitCode = (error as unknown as { code?: number | string }).code
           if (exitCode !== 3) {
             return resolve(null)
@@ -119,47 +125,51 @@ export async function tryRewriteCommand(
 
 /**
  * Universal OpenCode plugin for RTK.
- * Supports both OpenCode 2.0 (via .id and .setup) and OpenCode 1.x (callable function).
+ * Exports a plain object with `id` and `setup(ctx)` matching OpenCode 2.x Schema validation,
+ * with a `server()` method for OpenCode 1.x (1.18.29+) dual-shape compatibility.
  */
-async function RtkOpenCodePlugin(ctx?: any) {
-  if (!resolveRtkPath()) {
-    console.warn("[rtk] rtk binary not found — plugin disabled")
-    return {}
-  }
+const RtkOpenCodePlugin = {
+  id: "rtk",
 
-  // OpenCode 1.x hook map
-  return {
-    "tool.execute.before": async (input: any, output: any) => {
-      const args = output?.args
-      if (!args || typeof args !== "object") return
+  // OpenCode 2.x entrypoint
+  async setup(ctx: any) {
+    if (!resolveRtkPath()) {
+      console.warn("[rtk] rtk binary not found — plugin disabled")
+      return
+    }
 
-      const rewritten = await tryRewriteCommand(input?.tool, args.command)
-      if (rewritten) {
-        args.command = rewritten
-      }
-    },
-  }
-}
+    if (ctx?.tool?.hook) {
+      await ctx.tool.hook("execute.before", async (event: any) => {
+        const input = event?.input
+        if (!input || typeof input !== "object") return
 
-// OpenCode 2.0 definition
-RtkOpenCodePlugin.id = "rtk"
-RtkOpenCodePlugin.setup = async function (ctx: any) {
-  if (!resolveRtkPath()) {
-    console.warn("[rtk] rtk binary not found — plugin disabled")
-    return
-  }
+        const rewritten = await tryRewriteCommand(event?.tool, input.command)
+        if (rewritten) {
+          input.command = rewritten
+        }
+      })
+    }
+  },
 
-  if (ctx?.tool?.hook) {
-    await ctx.tool.hook("execute.before", async (event: any) => {
-      const input = event?.input
-      if (!input || typeof input !== "object") return
+  // OpenCode 1.x entrypoint (supported via dual-shape in 1.18.29+)
+  async server() {
+    if (!resolveRtkPath()) {
+      console.warn("[rtk] rtk binary not found — plugin disabled")
+      return {}
+    }
 
-      const rewritten = await tryRewriteCommand(event?.tool, input.command)
-      if (rewritten) {
-        input.command = rewritten
-      }
-    })
-  }
+    return {
+      "tool.execute.before": async (input: any, output: any) => {
+        const args = output?.args
+        if (!args || typeof args !== "object") return
+
+        const rewritten = await tryRewriteCommand(input?.tool, args.command)
+        if (rewritten) {
+          args.command = rewritten
+        }
+      },
+    }
+  },
 }
 
 export default RtkOpenCodePlugin

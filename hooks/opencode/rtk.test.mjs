@@ -1,23 +1,30 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { writeFileSync, unlinkSync, chmodSync } from "node:fs"
+import { writeFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
-import { tmpdir } from "node:os"
+import { homedir } from "node:os"
 import RtkOpenCodePlugin, {
   resolveRtkPath,
   runRtkRewrite,
   tryRewriteCommand,
+  expandHome,
+  _resetCachedRtkPath,
 } from "./rtk.ts"
 
-test("plugin shape: OpenCode V1 and V2 compatibility", async () => {
-  // V2 shape
+test("plugin schema: default export is a plain object matching V2 loader spec", async () => {
+  // Must be a plain object to pass OpenCode 2.x Schema validation (typeof === 'function' fails schema)
+  assert.equal(typeof RtkOpenCodePlugin, "object")
+  assert.notEqual(RtkOpenCodePlugin, null)
+  assert.equal(Array.isArray(RtkOpenCodePlugin), false)
+
+  // V2 contract
   assert.equal(RtkOpenCodePlugin.id, "rtk")
   assert.equal(typeof RtkOpenCodePlugin.setup, "function")
 
-  // V1 shape (function returning hooks map)
-  assert.equal(typeof RtkOpenCodePlugin, "function")
-  const v1Instance = await RtkOpenCodePlugin()
-  assert.equal(typeof v1Instance, "object")
+  // V1 dual-shape contract (server method)
+  assert.equal(typeof RtkOpenCodePlugin.server, "function")
+  const v1Hooks = await RtkOpenCodePlugin.server()
+  assert.equal(typeof v1Hooks, "object")
 })
 
 test("tool filter: only bash and shell tools are intercepted", async () => {
@@ -35,87 +42,62 @@ test("input guard: non-string and empty commands are skipped", async () => {
 })
 
 test("binary discovery: expands ~ in RTK_BIN", () => {
+  // 1. Direct expansion test for POSIX and Windows slashes
+  assert.equal(expandHome("~/test-bin"), join(homedir(), "test-bin"))
+  assert.equal(expandHome("~\\test-bin"), join(homedir(), "test-bin"))
+
+  // 2. Verified resolution precedence with an existing binary
   const originalEnv = process.env.RTK_BIN
   try {
-    process.env.RTK_BIN = "~/non-existent-rtk-binary-test"
-    // Should not throw, and should resolve to null if file doesn't exist
-    assert.equal(resolveRtkPath(), null)
+    _resetCachedRtkPath()
+    process.env.RTK_BIN = process.execPath // Node binary always exists
+    assert.equal(resolveRtkPath(), process.execPath)
   } finally {
     process.env.RTK_BIN = originalEnv
+    _resetCachedRtkPath()
   }
 })
 
 test("rewrite execution logic: exit code 0, 3, and failure handling", async () => {
-  const isWin = process.platform === "win32"
-  const scriptExt = isWin ? ".bat" : ".sh"
-  const scriptPath = join(tmpdir(), `mock-rtk-${Date.now()}${scriptExt}`)
+  // Uses process.execPath (node) as a real native binary runner
+  const mockScriptPath = join(process.cwd(), "rewrite")
 
-  // Create a mock executable that simulates rtk behavior based on argument
-  if (isWin) {
-    writeFileSync(
-      scriptPath,
-      `@echo off
-if "%~2"=="code0" (
-    echo rtk git status
-    exit /b 0
-)
-if "%~2"=="code3" (
-    echo rtk cargo test
-    exit /b 3
-)
-if "%~2"=="code1" (
-    echo defer
-    exit /b 1
-)
-if "%~2"=="sleep" (
-    timeout /t 5 >nul
-    exit /b 0
-)
-exit /b 2
+  writeFileSync(
+    mockScriptPath,
+    `
+const arg = process.argv[2]
+if (arg === "code0") {
+  console.log("rtk git status")
+  process.exit(0)
+} else if (arg === "code3") {
+  console.log("rtk cargo test")
+  process.exit(3)
+} else if (arg === "code1") {
+  console.log("defer")
+  process.exit(1)
+} else if (arg === "sleep") {
+  setTimeout(() => process.exit(0), 5000)
+} else {
+  process.exit(2)
+}
 `
-    )
-  } else {
-    writeFileSync(
-      scriptPath,
-      `#!/bin/sh
-if [ "$2" = "code0" ]; then
-    echo "rtk git status"
-    exit 0
-elif [ "$2" = "code3" ]; then
-    echo "rtk cargo test"
-    exit 3
-elif [ "$2" = "code1" ]; then
-    echo "defer"
-    exit 1
-elif [ "$2" = "sleep" ]; then
-    sleep 5
-    exit 0
-fi
-exit 2
-`
-    )
-    chmodSync(scriptPath, 0o755)
-  }
+  )
 
   try {
-    // Exit code 0 -> should accept
-    const res0 = await runRtkRewrite(scriptPath, "code0")
+    const res0 = await runRtkRewrite(process.execPath, "code0")
     assert.equal(res0, "rtk git status")
 
-    // Exit code 3 (Ask/Default) -> should accept
-    const res3 = await runRtkRewrite(scriptPath, "code3")
+    const res3 = await runRtkRewrite(process.execPath, "code3")
     assert.equal(res3, "rtk cargo test")
 
-    // Exit code 1 (Defer) or 2 (Deny) -> should reject/return null
-    const res1 = await runRtkRewrite(scriptPath, "code1")
+    const res1 = await runRtkRewrite(process.execPath, "code1")
     assert.equal(res1, null)
 
-    // Timeout -> should abort and discard output
-    const resTimeout = await runRtkRewrite(scriptPath, "sleep", 100)
+    const resTimeout = await runRtkRewrite(process.execPath, "sleep", 100)
     assert.equal(resTimeout, null)
   } finally {
     try {
-      unlinkSync(scriptPath)
+      unlinkSync(mockScriptPath)
     } catch {}
   }
 })
@@ -124,7 +106,7 @@ test("V2 hook execution lifecycle mutates event.input.command", async () => {
   let registeredHook = null
   const mockCtx = {
     tool: {
-      hook(name, callback) {
+      async hook(name, callback) {
         if (name === "execute.before") {
           registeredHook = callback
         }

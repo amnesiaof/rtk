@@ -5,6 +5,8 @@ import { join } from "node:path"
 import { homedir } from "node:os"
 import RtkOpenCodePlugin, {
   resolveRtkPath,
+  probeRtkVersion,
+  isRtkVersionSupported,
   runHookOpencode,
   tryRewriteCommand,
   expandHome,
@@ -56,6 +58,41 @@ test("binary discovery: expands ~ in RTK_BIN", () => {
     process.env.RTK_BIN = originalEnv
     _resetCachedRtkPath()
   }
+})
+
+test("version probe: `rtk --version` decides usability, not mere existence", async () => {
+  // Node stands in for rtk: it answers --version on stdout and exits 0, the
+  // same shape as `rtk 0.51.1`.
+  const banner = await probeRtkVersion(process.execPath)
+  assert.match(banner, /v?\d+\.\d+\.\d+/)
+
+  // A path that exists but cannot run must fail the probe — the case an
+  // existsSync-only check would wave through.
+  _resetCachedRtkPath()
+  assert.equal(await probeRtkVersion(join(process.cwd(), "definitely-not-rtk")), null)
+
+  // Cached per binary: guards against a regression that respawns `rtk
+  // --version` on every tool call instead of once per session.
+  assert.equal(await probeRtkVersion(process.execPath), banner)
+  _resetCachedRtkPath()
+})
+
+test("min version gate: 0.51.1 is the first release with `hook opencode`", () => {
+  // v0.51.0 has no `hook opencode` subcommand: it must be refused.
+  assert.equal(isRtkVersionSupported("rtk 0.51.0"), false)
+  assert.equal(isRtkVersionSupported("rtk 0.50.0"), false)
+  assert.equal(isRtkVersionSupported("rtk 0.23.0"), false)
+  assert.equal(isRtkVersionSupported("rtk 1.0.0"), true)
+
+  // The floor itself, and anything above it, including later minors.
+  assert.equal(isRtkVersionSupported("rtk 0.51.1"), true)
+  assert.equal(isRtkVersionSupported("rtk 0.52.0"), true)
+  assert.equal(isRtkVersionSupported("rtk 0.51.2"), true)
+
+  // Unparseable banner is not evidence of an old rtk — let it through and let
+  // the delegation call fail open if the subcommand is really missing.
+  assert.equal(isRtkVersionSupported("rtk (unknown)"), true)
+  assert.equal(isRtkVersionSupported(""), true)
 })
 
 test("delegation to `rtk hook opencode`: argv, answer parsing, pass-through", async () => {

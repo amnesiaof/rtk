@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { homedir } from "node:os"
 import RtkOpenCodePlugin, {
   resolveRtkPath,
-  runRtkRewrite,
+  runHookOpencode,
   tryRewriteCommand,
   expandHome,
   _resetCachedRtkPath,
@@ -58,44 +58,65 @@ test("binary discovery: expands ~ in RTK_BIN", () => {
   }
 })
 
-test("rewrite execution logic: exit code 0, 3, and failure handling", async () => {
-  // Uses process.execPath (node) as a real native binary runner
-  const mockScriptPath = join(process.cwd(), "rewrite")
+test("delegation to `rtk hook opencode`: argv, answer parsing, pass-through", async () => {
+  // process.execPath (node) stands in for the rtk binary, so the mock MUST be
+  // named `hook`: the plugin spawns `[<rtk>, "hook", "opencode", <command>]`
+  // and node reads argv[2] as the script to run.
+  const mockScriptPath = join(process.cwd(), "hook")
 
   writeFileSync(
     mockScriptPath,
     `
-const arg = process.argv[2]
-if (arg === "code0") {
-  console.log("rtk git status")
-  process.exit(0)
-} else if (arg === "code3") {
-  console.log("rtk cargo test")
+const subcommand = process.argv[2]
+const arg = process.argv[3]
+if (process.env.ECHO_ARGV) {
+  console.log(JSON.stringify({ command: arg + "|arity=" + process.argv.length }))
+} else if (subcommand !== "opencode") {
   process.exit(3)
-} else if (arg === "code1") {
-  console.log("defer")
-  process.exit(1)
+} else if (arg === "rewrite") {
+  console.log(JSON.stringify({ command: "rtk git status" }))
+} else if (arg === "unchanged") {
+  // The Rust side answers {} whenever the rewrite would change the verdict.
+  console.log("{}")
+} else if (arg === "echo") {
+  console.log(JSON.stringify({ command: arg }))
+} else if (arg === "garbage") {
+  console.log("not json at all")
+} else if (arg === "empty") {
+  process.exit(0)
+} else if (arg === "fail") {
+  process.exit(2)
 } else if (arg === "sleep") {
   setTimeout(() => process.exit(0), 5000)
-} else {
-  process.exit(2)
 }
 `
   )
 
+  const originalEcho = process.env.ECHO_ARGV
   try {
-    const res0 = await runRtkRewrite(process.execPath, "code0")
-    assert.equal(res0, "rtk git status")
+    // The command must arrive as ONE argv element, never through a shell:
+    // arity 4 is [node, hook, opencode, <command>] and the echoed command
+    // keeps its "&&" intact, so nothing split or interpolated it.
+    process.env.ECHO_ARGV = "1"
+    const echoed = await runHookOpencode(process.execPath, "git status && rm -rf /")
+    delete process.env.ECHO_ARGV
+    assert.equal(echoed, "git status && rm -rf /|arity=4")
 
-    const res3 = await runRtkRewrite(process.execPath, "code3")
-    assert.equal(res3, "rtk cargo test")
+    assert.equal(await runHookOpencode(process.execPath, "rewrite"), "rtk git status")
 
-    const res1 = await runRtkRewrite(process.execPath, "code1")
-    assert.equal(res1, null)
+    // {} means "run it as typed" — no mutation, not an error.
+    assert.equal(await runHookOpencode(process.execPath, "unchanged"), null)
 
-    const resTimeout = await runRtkRewrite(process.execPath, "sleep", 100)
-    assert.equal(resTimeout, null)
+    // An answer identical to the input is not a rewrite.
+    assert.equal(await runHookOpencode(process.execPath, "echo"), null)
+
+    assert.equal(await runHookOpencode(process.execPath, "garbage"), null)
+    assert.equal(await runHookOpencode(process.execPath, "empty"), null)
+    assert.equal(await runHookOpencode(process.execPath, "fail"), null)
+    assert.equal(await runHookOpencode(process.execPath, "sleep", 100), null)
   } finally {
+    if (originalEcho === undefined) delete process.env.ECHO_ARGV
+    else process.env.ECHO_ARGV = originalEcho
     try {
       unlinkSync(mockScriptPath)
     } catch {}
@@ -114,6 +135,16 @@ test("V2 hook execution lifecycle mutates event.input.command", async () => {
     },
   }
 
-  await RtkOpenCodePlugin.setup(mockCtx)
-  assert.equal(typeof registeredHook, "function")
+  // setup() bails when no rtk binary is discoverable, so pin RTK_BIN to the
+  // always-present node binary instead of depending on the host having rtk.
+  const originalEnv = process.env.RTK_BIN
+  try {
+    _resetCachedRtkPath()
+    process.env.RTK_BIN = process.execPath
+    await RtkOpenCodePlugin.setup(mockCtx)
+    assert.equal(typeof registeredHook, "function")
+  } finally {
+    process.env.RTK_BIN = originalEnv
+    _resetCachedRtkPath()
+  }
 })

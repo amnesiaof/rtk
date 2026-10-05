@@ -3,6 +3,27 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { delimiter, join } from "node:path"
 
+// RTK OpenCode plugin — rewrites commands to use rtk for token savings.
+// Requires: an rtk with the `rtk hook opencode` subcommand (newer than
+// v0.51). An older rtk answers nothing, so commands pass through unrewritten
+// rather than breaking.
+//
+// This is a thin compat shim: all rewrite and permission logic lives in
+// `rtk hook opencode`, which is the single source of truth
+// (src/discover/registry.rs). It judges the command against OpenCode's own
+// permission rules and answers `{}` whenever the rewrite would change what
+// those rules decide — OpenCode evaluates the final command itself, so a
+// rewrite RTK does return never lifts a deny, silences an ask, or blocks an
+// allow (#4195). To add or change rewrite rules, edit the Rust registry — not
+// this file.
+//
+// This file only carries the transport: it must run wherever OpenCode runs, so
+// it uses `node:child_process.execFile` and system PATH discovery rather than
+// Bun's `$` shell helper (`TypeError: $ is not a function` under OpenCode
+// Desktop / Electron) and `which` (absent on Windows).
+
+type Answer = { command?: string }
+
 let cachedRtkPath: string | null = null
 
 export function _resetCachedRtkPath(): void {
@@ -49,12 +70,15 @@ export function resolveRtkPath(): string | null {
 }
 
 /**
- * Invokes `rtk rewrite <command>`.
- * Handles exit code 0 (Allow) and exit code 3 (Ask/Default).
- * Discards partial stdout if the process was terminated, killed by timeout,
- * or exited with non-rewrite error codes (Deny: 2, Defer: 1).
+ * Invokes `rtk hook opencode <command>` and returns the answered rewrite.
+ *
+ * The answer is `{}` whenever the rewrite would change the verdict OpenCode's
+ * own permission rules give, and that empty answer means the command runs as
+ * typed. Anything unusable — non-zero exit, timeout, non-JSON stdout — also
+ * resolves to null, so a broken rtk passes the command through instead of
+ * blocking the tool call.
  */
-export function runRtkRewrite(
+export function runHookOpencode(
   rtkBin: string,
   command: string,
   timeoutMs = 3000
@@ -62,17 +86,20 @@ export function runRtkRewrite(
   return new Promise((resolve) => {
     execFile(
       rtkBin,
-      ["rewrite", command],
+      ["hook", "opencode", command],
       { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
       (error, stdout) => {
-        if (error) {
-          if (error.killed || error.signal) return resolve(null)
-          const exitCode = (error as unknown as { code?: number | string }).code
-          if (exitCode !== 3) return resolve(null)
+        if (error) return resolve(null)
+
+        let answer: Answer
+        try {
+          answer = JSON.parse(String(stdout ?? "").trim() || "{}")
+        } catch {
+          return resolve(null)
         }
 
-        const output = String(stdout ?? "").trim()
-        resolve(output && output !== command ? output : null)
+        const rewritten = typeof answer?.command === "string" ? answer.command.trim() : ""
+        resolve(rewritten && rewritten !== command ? rewritten : null)
       }
     )
   })
@@ -91,16 +118,16 @@ export async function tryRewriteCommand(
   if (!rtkBin) return null
 
   try {
-    return await runRtkRewrite(rtkBin, command)
+    return await runHookOpencode(rtkBin, command)
   } catch {
     return null
   }
 }
 
-async function handleToolHook(tool: unknown, container: any, key: "command") {
+async function handleToolHook(tool: unknown, container: any) {
   if (!container || typeof container !== "object") return
-  const rewritten = await tryRewriteCommand(String(tool ?? ""), container[key])
-  if (rewritten) container[key] = rewritten
+  const rewritten = await tryRewriteCommand(String(tool ?? ""), container.command)
+  if (rewritten) container.command = rewritten
 }
 
 function warnMissingRtk(): boolean {
@@ -120,14 +147,14 @@ const RtkOpenCodePlugin = {
   // OpenCode 2.x entrypoint
   async setup(ctx: any) {
     if (!warnMissingRtk()) return
-    await ctx?.tool?.hook?.("execute.before", (e: any) => handleToolHook(e?.tool, e?.input, "command"))
+    await ctx?.tool?.hook?.("execute.before", (e: any) => handleToolHook(e?.tool, e?.input))
   },
 
   // OpenCode 1.x entrypoint (supported via dual-shape in 1.18.29+)
   async server() {
     if (!warnMissingRtk()) return {}
     return {
-      "tool.execute.before": (input: any, output: any) => handleToolHook(input?.tool, output?.args, "command"),
+      "tool.execute.before": (input: any, output: any) => handleToolHook(input?.tool, output?.args),
     }
   },
 }

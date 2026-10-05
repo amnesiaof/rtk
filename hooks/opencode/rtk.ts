@@ -152,6 +152,13 @@ export async function tryRewriteCommand(
   }
   if (isAlreadyRtk(command)) return null
 
+  // `RTK_DISABLED=1` is the documented escape hatch (hooks/README.md) and the
+  // escape hatch other hooks honour -- hooks/pi/rtk.ts checks the same env
+  // var. Checked per call, not at setup: the variable is inherited from
+  // whatever launched OpenCode, and users set it per session to compare
+  // against a run without rtk.
+  if (process.env.RTK_DISABLED === "1") return null
+
   const rtkBin = resolveRtkPath()
   if (!rtkBin) return null
 

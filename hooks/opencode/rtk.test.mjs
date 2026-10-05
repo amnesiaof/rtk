@@ -107,6 +107,46 @@ test("already-rtk guard: a command invoking rtk is not re-delegated", async () =
   assert.equal(isAlreadyRtk("echo rtk git status"), false)
 })
 
+test("RTK_DISABLED=1 disables rewriting for the session", async () => {
+  const originalBin = process.env.RTK_BIN
+  const originalDisabled = process.env.RTK_DISABLED
+  try {
+    _resetCachedRtkPath()
+    process.env.RTK_BIN = process.execPath
+    process.env.RTK_DISABLED = "1"
+    // The guard must short-circuit before the binary is consulted, so this
+    // holds even though node-as-rtk would answer nothing useful anyway.
+    assert.equal(await tryRewriteCommand("bash", "git status"), null)
+  } finally {
+    process.env.RTK_DISABLED = originalDisabled
+    process.env.RTK_BIN = originalBin
+    _resetCachedRtkPath()
+  }
+
+  // Only the exact value "1" disables it -- "0" and "true" are not the
+  // documented form and must not silently disable the plugin.
+  _resetCachedRtkPath()
+  process.env.RTK_BIN = process.execPath
+  try {
+    process.env.RTK_DISABLED = "0"
+    const mockScriptPath = join(process.cwd(), "hook")
+    writeFileSync(
+      mockScriptPath,
+      `console.log(JSON.stringify({ command: "rtk git status" }))`
+    )
+    assert.equal(await tryRewriteCommand("bash", "git status"), "rtk git status")
+    process.env.RTK_DISABLED = "true"
+    assert.equal(await tryRewriteCommand("bash", "git status"), "rtk git status")
+  } finally {
+    process.env.RTK_DISABLED = originalDisabled
+    process.env.RTK_BIN = originalBin
+    _resetCachedRtkPath()
+    try {
+      unlinkSync(join(process.cwd(), "hook"))
+    } catch {}
+  }
+})
+
 test("delegation to `rtk hook opencode`: argv, answer parsing, pass-through", async () => {
   // process.execPath (node) stands in for the rtk binary, so the mock MUST be
   // named `hook`: the plugin spawns `[<rtk>, "hook", "opencode", <command>]`

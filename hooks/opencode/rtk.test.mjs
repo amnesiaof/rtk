@@ -7,6 +7,7 @@ import RtkOpenCodePlugin, {
   resolveRtkPath,
   probeRtkVersion,
   isRtkVersionSupported,
+  isAlreadyRtk,
   runHookOpencode,
   tryRewriteCommand,
   expandHome,
@@ -95,6 +96,17 @@ test("min version gate: 0.51.1 is the first release with `hook opencode`", () =>
   assert.equal(isRtkVersionSupported(""), true)
 })
 
+test("already-rtk guard: a command invoking rtk is not re-delegated", async () => {
+  assert.equal(isAlreadyRtk("rtk git status"), true)
+  assert.equal(isAlreadyRtk("  rtk git status"), true)
+  assert.equal(isAlreadyRtk("rtk git status && rtk cargo test"), true)
+
+  // A binary that merely starts with the same letters is not rtk.
+  assert.equal(isAlreadyRtk("rtkfoo bar"), false)
+  assert.equal(isAlreadyRtk("git status"), false)
+  assert.equal(isAlreadyRtk("echo rtk git status"), false)
+})
+
 test("delegation to `rtk hook opencode`: argv, answer parsing, pass-through", async () => {
   // process.execPath (node) stands in for the rtk binary, so the mock MUST be
   // named `hook`: the plugin spawns `[<rtk>, "hook", "opencode", <command>]`
@@ -140,6 +152,20 @@ if (process.env.ECHO_ARGV) {
     assert.equal(echoed, "git status && rm -rf /|arity=4")
 
     assert.equal(await runHookOpencode(process.execPath, "rewrite"), "rtk git status")
+
+    // The already-rtk guard has to block the spawn, not merely return null
+    // afterwards: with the mock live, "rewrite" is answered, so a null here
+    // can only come from the guard short-circuiting before execFile.
+    const originalBin = process.env.RTK_BIN
+    try {
+      _resetCachedRtkPath()
+      process.env.RTK_BIN = process.execPath
+      assert.equal(await tryRewriteCommand("bash", "rewrite"), "rtk git status")
+      assert.equal(await tryRewriteCommand("bash", "rtk rewrite"), null)
+    } finally {
+      process.env.RTK_BIN = originalBin
+      _resetCachedRtkPath()
+    }
 
     // {} means "run it as typed" — no mutation, not an error.
     assert.equal(await runHookOpencode(process.execPath, "unchanged"), null)

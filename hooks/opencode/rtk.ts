@@ -144,11 +144,15 @@ export async function tryRewriteCommand(
     return null
   }
 
-  // `RTK_DISABLED=1` is the documented escape hatch (hooks/README.md) and the
-  // escape hatch other hooks honour -- hooks/pi/rtk.ts checks the same env
-  // var. Checked per call, not at setup: the variable is inherited from
-  // whatever launched OpenCode, and users set it per session to compare
-  // against a run without rtk.
+  // RTK_DISABLED is two different things and only one of them is checked here.
+  // The per-command form (`RTK_DISABLED=1 git status`) is an env prefix inside
+  // the command string, and the Rust rewrite engine handles it — this plugin
+  // passes the string through untouched, so that one already works. What is
+  // checked here is the OpenCode process environment, which switches rewriting
+  // off for the whole session. hooks/pi/rtk.ts:124 checks the same var.
+  //
+  // Per call rather than at setup: the variable is inherited from whatever
+  // launched OpenCode, so it is not known until a hook fires.
   if (process.env.RTK_DISABLED === "1") return null
 
   const rtkBin = resolveRtkPath()

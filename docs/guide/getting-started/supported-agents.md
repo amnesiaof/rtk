@@ -34,7 +34,7 @@ Agent runs "cargo test"
 | GitHub Copilot CLI | Shell hook (`PreToolUse`) | Yes |
 | Cursor | Shell hook (`preToolUse`) | Yes |
 | Gemini CLI | Rust binary (`BeforeTool`) | Yes |
-| OpenCode | TypeScript plugin (`execute.before` / `tool.execute.before`) | Yes |
+| OpenCode | TypeScript plugin (`execute.before` in 2.0, `tool.execute.before` in 1.x >= 1.18.29) | Yes |
 | OpenClaw | TypeScript plugin (`before_tool_call`) | Yes |
 | Pi | TypeScript extension (`tool_call` event) | Yes |
 | Oh My Pi (OMP) | TypeScript extension (`tool_call` event, shared with Pi) | Yes |

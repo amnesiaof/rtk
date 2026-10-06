@@ -184,16 +184,18 @@ async function ensureRtkUsable(): Promise<boolean> {
 }
 
 /**
- * OpenCode 2.x and 1.x (>= 1.3.4) plugin for RTK.
+ * OpenCode 2.x and 1.x (>= 1.18.29) plugin for RTK.
  *
  * A plain object, because the 2.x loader schema-validates `default` against
  * `typeof === "object"` — a callable with `id`/`setup` bolted on fails
  * validation, so the V2 branch would never activate (codebude, on 2.0.16).
  * The `server()` method is the documented 1.x dual-shape entrypoint.
  *
- * OpenCode <= 1.3.3 calls every export as `fn(input)`, which an object is not,
- * so those loaders cannot load this file. `rtk init -g --opencode` installs
- * hooks/opencode/rtk-legacy.ts for them instead.
+ * 1.18.29 is the floor OpenCode's own V2 plugin docs put on the object form:
+ * https://opencode.ai/v2/docs/build/plugins#support-v1. Older V1 loaders call
+ * every export as `fn(input)`, which an object is not, so those versions cannot
+ * load this file. `rtk init -g --opencode` names the version and the floor when
+ * it can read `opencode --version` and finds one below.
  */
 const RtkOpenCodePlugin = {
   id: "rtk",

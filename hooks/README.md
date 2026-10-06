@@ -279,19 +279,25 @@ The `allow` value is required by Codex to accept `updatedInput`; Codex still run
 
 ### OpenCode (TypeScript Plugin)
 
-Delegates to `rtk hook opencode` via `node:child_process.execFile` (supports OpenCode 2.0 and 1.x). The Rust side owns the rewrite rules and the permission verdict; the plugin only carries it:
+Delegates to `rtk hook opencode` via `node:child_process.execFile` (supports OpenCode 2.0 and 1.x >= 1.3.4; [<= 1.3.3](opencode/README.md) gets a legacy plugin). The Rust side owns the rewrite rules and the permission verdict; the plugin only carries it. The hook must be awaited — `args.command = …` after the call returns has nothing left to rewrite:
 
 ```typescript
 const tool = String(input?.tool ?? "").toLowerCase()
 if (tool === "bash" || tool === "shell") {
-  execFile(rtkBin, ["hook", "opencode", command], { encoding: "utf8", timeout: 3000, windowsHide: true }, (err, stdout) => {
-    if (err) return // pass through unchanged
-    const answer = JSON.parse(String(stdout ?? "").trim() || "{}")
-    // {} means the rewrite would change OpenCode's own verdict — run as typed.
-    if (answer.command && answer.command !== command) {
-      args.command = answer.command
-    }
+  const rewritten = await new Promise((resolve) => {
+    execFile(rtkBin, ["hook", "opencode", command], { encoding: "utf8", timeout: 3000, windowsHide: true }, (err, stdout) => {
+      if (err) return resolve(null) // pass through unchanged
+      try {
+        resolve(JSON.parse(String(stdout ?? "").trim() || "{}").command ?? null)
+      } catch {
+        resolve(null)
+      }
+    })
   })
+  // {} means the rewrite would change OpenCode's own verdict — run as typed.
+  if (rewritten && rewritten !== command) {
+    args.command = rewritten
+  }
 }
 ```
 

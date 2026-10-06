@@ -1,61 +1,51 @@
 import { execFile } from "node:child_process"
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
+import { existsSync, statSync } from "node:fs"
 import { delimiter, join } from "node:path"
 
-// RTK OpenCode plugin — rewrites commands to use rtk for token savings.
-// Requires: rtk >= 0.51.1, the first release carrying `rtk hook opencode`
-// (added in #4349; v0.51.0 and older have no such subcommand).
+// RTK OpenCode plugin РІР‚вЂќ rewrites commands to use rtk for token savings.
 //
 // This is a thin compat shim: all rewrite and permission logic lives in
 // `rtk hook opencode`, which is the single source of truth
 // (src/discover/registry.rs). It judges the command against OpenCode's own
 // permission rules and answers `{}` whenever the rewrite would change what
-// those rules decide — OpenCode evaluates the final command itself, so a
+// those rules decide РІР‚вЂќ OpenCode evaluates the final command itself, so a
 // rewrite RTK does return never lifts a deny, silences an ask, or blocks an
-// allow (#4195). To add or change rewrite rules, edit the Rust registry — not
+// allow (#4195). To add or change rewrite rules, edit the Rust registry РІР‚вЂќ not
 // this file.
 //
 // This file only carries the transport: it must run wherever OpenCode runs, so
-// it uses `node:child_process.execFile` and system PATH discovery rather than
-// Bun's `$` shell helper (`TypeError: $ is not a function` under OpenCode
-// Desktop / Electron) and `which` (absent on Windows).
+// it uses `node:child_process.execFile` and PATH discovery rather than Bun's
+// `$` shell helper (`TypeError: $ is not a function` under OpenCode Desktop /
+// Electron) and `which` (absent on Windows).
 
 type Answer = { command?: string }
 
 let cachedRtkPath: string | null = null
-let probedBanner: { bin: string; banner: string } | null = null
+let probedBin: { bin: string; capable: boolean } | null = null
 
 export function _resetCachedRtkPath(): void {
   cachedRtkPath = null
-  probedBanner = null
-}
-
-export function expandHome(filepath: string): string {
-  return /^~[/\\]?/.test(filepath)
-    ? join(homedir(), filepath.replace(/^~[/\\]?/, ""))
-    : filepath
+  probedBin = null
 }
 
 /**
- * Resolves the rtk binary from RTK_BIN, standard PATH, or common installation directories.
+ * Resolves the rtk binary from the system PATH.
+ *
+ * PATH only, deliberately. OpenCode's bash/shell tool runs commands with
+ * OpenCode's own PATH and never sources `.profile`, `.bashrc` or
+ * `.bash_profile`, so an rtk found outside PATH cannot be spawned as a bare
+ * `rtk РІР‚В¦` РІР‚вЂќ the tool comes back `rtk: command not found`. Finding one anyway
+ * is worse than not rewriting (#4462 carries that case). A directory on PATH
+ * named `rtk` is skipped rather than frozen as the answer: it disables the
+ * plugin for the whole session.
+ *
+ * Windows still probes PATHEXT, which is the #1993 fix: `which` does not exist
+ * there.
  */
 export function resolveRtkPath(): string | null {
   if (cachedRtkPath && existsSync(cachedRtkPath)) return cachedRtkPath
 
-  const envBin = process.env.RTK_BIN
-  if (envBin) {
-    const expanded = expandHome(envBin)
-    if (existsSync(expanded)) return (cachedRtkPath = expanded)
-  }
-
-  const dirs = [
-    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
-    join(homedir(), ".local", "bin"),
-    join(homedir(), ".cargo", "bin"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-  ]
+  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean)
   const exts = process.platform === "win32"
     ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
     : [""]
@@ -63,7 +53,9 @@ export function resolveRtkPath(): string | null {
   for (const dir of dirs) {
     for (const ext of exts) {
       const fullPath = join(dir, `rtk${ext}`)
-      if (existsSync(fullPath)) return (cachedRtkPath = fullPath)
+      if (existsSync(fullPath) && !statSync(fullPath).isDirectory()) {
+        return (cachedRtkPath = fullPath)
+      }
     }
   }
 
@@ -71,70 +63,81 @@ export function resolveRtkPath(): string | null {
 }
 
 /**
- * Probes the binary with `rtk --version`.
+ * Probes for the `rtk hook opencode` subcommand, and nothing else.
  *
- * Existence is not enough: a file named `rtk` on PATH proves nothing about
- * whether it runs. Spawning it once and reading its banner is the only check
- * that survives a broken install, a wrong-arch binary, or a stale `RTK_BIN`.
- * The answer is cached per binary — this runs once per OpenCode session, not
- * once per tool call.
+ * Not a version number: a develop build reports `rtk 0.49.0` (release-please
+ * only bumps Cargo.toml on master) and so does the pre-#4349 release that
+ * lacks the subcommand entirely РІР‚вЂќ the two are indistinguishable by banner, and
+ * a version floor also disabled the plugin on the very binary that installed
+ * it. `hook opencode --help` separates them: exit 0 with the subcommand, exit 2
+ * without it, and a broken or wrong-arch binary fails to spawn at all. One
+ * call, and it subsumes the "does this binary even run" check.
+ *
+ * Cached per binary РІР‚вЂќ this runs once per OpenCode session, not per tool call.
  */
-export function probeRtkVersion(rtkBin: string): Promise<string | null> {
-  if (probedBanner?.bin === rtkBin) return Promise.resolve(probedBanner.banner)
+export function probeRtkHookOpencode(rtkBin: string): Promise<boolean> {
+  if (probedBin?.bin === rtkBin) return Promise.resolve(probedBin.capable)
   return new Promise((resolve) => {
     execFile(
       rtkBin,
-      ["--version"],
+      ["hook", "opencode", "--help"],
       { encoding: "utf8", timeout: 3000, windowsHide: true },
-      (error, stdout) => {
-        if (error) return resolve(null)
-        const banner = String(stdout ?? "").trim()
-        probedBanner = { bin: rtkBin, banner }
-        resolve(banner)
+      (error) => {
+        if (error) return resolve(false)
+        probedBin = { bin: rtkBin, capable: true }
+        resolve(true)
       }
     )
   })
 }
 
 /**
- * Invokes `rtk hook opencode <command>` and returns the answered rewrite.
+ * Invokes `rtk hook opencode [--agent <name>] <command>` and returns the
+ * answered rewrite.
+ *
+ * `agent` is OpenCode 2.x's `event.agent`; rtk reads `agent.<name>.permission`
+ * on top of the root rules, which is what OpenCode itself applies. Without it
+ * an agent-scoped ask on `ls *` would be silenced by the rewrite and an
+ * agent-scoped deny on `ls -la` would never see the command. OpenCode 1.x sends
+ * no agent field, so the V1 path stays root-only.
  *
  * The answer is `{}` whenever the rewrite would change the verdict OpenCode's
  * own permission rules give, and that empty answer means the command runs as
- * typed. Anything unusable — non-zero exit, timeout, non-JSON stdout — also
+ * typed. Anything unusable РІР‚вЂќ non-zero exit, timeout, non-JSON stdout РІР‚вЂќ also
  * resolves to null, so a broken rtk passes the command through instead of
  * blocking the tool call.
  */
 export function runHookOpencode(
   rtkBin: string,
   command: string,
+  agent?: string,
   timeoutMs = 3000
 ): Promise<string | null> {
+  const argv = ["hook", "opencode"]
+  if (agent) argv.push("--agent", agent)
+  argv.push(command)
+
   return new Promise((resolve) => {
-    execFile(
-      rtkBin,
-      ["hook", "opencode", command],
-      { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
-      (error, stdout) => {
-        if (error) return resolve(null)
+    execFile(rtkBin, argv, { encoding: "utf8", timeout: timeoutMs, windowsHide: true }, (error, stdout) => {
+      if (error) return resolve(null)
 
-        let answer: Answer
-        try {
-          answer = JSON.parse(String(stdout ?? "").trim() || "{}")
-        } catch {
-          return resolve(null)
-        }
-
-        const rewritten = typeof answer?.command === "string" ? answer.command.trim() : ""
-        resolve(rewritten && rewritten !== command ? rewritten : null)
+      let answer: Answer
+      try {
+        answer = JSON.parse(String(stdout ?? "").trim() || "{}")
+      } catch {
+        return resolve(null)
       }
-    )
+
+      const rewritten = typeof answer?.command === "string" ? answer.command.trim() : ""
+      resolve(rewritten && rewritten !== command ? rewritten : null)
+    })
   })
 }
 
 export async function tryRewriteCommand(
   toolName: string,
-  command: unknown
+  command: unknown,
+  agent?: string
 ): Promise<string | null> {
   const tool = String(toolName ?? "").toLowerCase()
   if ((tool !== "bash" && tool !== "shell") || typeof command !== "string" || !command.trim()) {
@@ -152,90 +155,64 @@ export async function tryRewriteCommand(
   if (!rtkBin) return null
 
   try {
-    return await runHookOpencode(rtkBin, command)
+    return await runHookOpencode(rtkBin, command, agent)
   } catch {
     return null
   }
 }
 
-async function handleToolHook(tool: unknown, container: any) {
+async function handleToolHook(tool: unknown, container: any, agent?: string) {
   if (!container || typeof container !== "object") return
-  const rewritten = await tryRewriteCommand(String(tool ?? ""), container.command)
+  const rewritten = await tryRewriteCommand(String(tool ?? ""), container.command, agent)
   if (rewritten) container.command = rewritten
 }
 
 /**
- * First release carrying `rtk hook opencode` (added in #4349). v0.51.0 and
- * older have no such subcommand: every delegation would fail with an unknown
- * subcommand error, so the plugin would silently pass every command through.
- * A develop build reports `0.49.0` because release-please only bumps Cargo.toml
- * on master — the warning is then accurate, since such a build has no release
- * version at all.
- */
-const MIN_RTK_VERSION: [number, number, number] = [0, 51, 1]
-
-/**
- * True when `banner` names a release that is at or above MIN_RTK_VERSION.
- *
- * An unparseable banner passes: a future rtk may change the format, and an
- * unknown version is not evidence of an old one. The delegation call still
- * fails open on anything unusable.
- */
-export function isRtkVersionSupported(banner: string): boolean {
-  const m = banner.match(/(\d+)\.(\d+)\.(\d+)/)
-  if (!m) return true
-  const found = m.slice(1).map(Number)
-  for (let i = 0; i < 3; i++) {
-    if (found[i] !== MIN_RTK_VERSION[i]) return found[i] > MIN_RTK_VERSION[i]
-  }
-  return true
-}
-
-/**
- * Registers hooks only against an rtk that runs and is new enough to answer
- * `rtk hook opencode`.
+ * Registers hooks only against an rtk that carries `rtk hook opencode`.
  */
 async function ensureRtkUsable(): Promise<boolean> {
   const rtkBin = resolveRtkPath()
   if (!rtkBin) {
-    console.warn("[rtk] rtk binary not found — plugin disabled")
+    console.warn("[rtk] no rtk on OpenCode's PATH РІР‚вЂќ plugin disabled")
     return false
   }
-
-  const banner = await probeRtkVersion(rtkBin)
-  if (banner === null) {
-    console.warn(`[rtk] ${rtkBin} did not answer \`rtk --version\` — plugin disabled`)
-    return false
-  }
-  if (!isRtkVersionSupported(banner)) {
-    const need = MIN_RTK_VERSION.slice(1).join(".")
-    console.warn(
-      `[rtk] rtk ${banner} has no \`hook opencode\` subcommand (need >= ${need}) — plugin disabled`
-    )
+  if (!(await probeRtkHookOpencode(rtkBin))) {
+    console.warn(`[rtk] ${rtkBin} has no \`rtk hook opencode\` subcommand РІР‚вЂќ plugin disabled`)
     return false
   }
   return true
 }
 
 /**
- * Universal OpenCode plugin for RTK.
- * Exports a plain object with `id` and `setup(ctx)` matching OpenCode 2.x Schema validation,
- * with a `server()` method for OpenCode 1.x (1.18.29+) dual-shape compatibility.
+ * OpenCode 2.x and 1.x (>= 1.3.4) plugin for RTK.
+ *
+ * A plain object, because the 2.x loader schema-validates `default` against
+ * `typeof === "object"` РІР‚вЂќ a callable with `id`/`setup` bolted on fails
+ * validation, so the V2 branch would never activate (codebude, on 2.0.16).
+ * The `server()` method is the documented 1.x dual-shape entrypoint.
+ *
+ * OpenCode <= 1.3.3 calls every export as `fn(input)`, which an object is not,
+ * so those loaders cannot load this file. `rtk init -g --opencode` installs
+ * hooks/opencode/rtk-legacy.ts for them instead.
  */
 const RtkOpenCodePlugin = {
   id: "rtk",
 
-  // OpenCode 2.x entrypoint
+  // OpenCode 2.x entrypoint: `{tool, sessionID, agent, messageID, id, input}`.
   async setup(ctx: any) {
     if (!(await ensureRtkUsable())) return
-    await ctx?.tool?.hook?.("execute.before", (e: any) => handleToolHook(e?.tool, e?.input))
+    await ctx?.tool?.hook?.("execute.before", (e: any) =>
+      handleToolHook(e?.tool, e?.input, typeof e?.agent === "string" ? e.agent : undefined)
+    )
   },
 
-  // OpenCode 1.x entrypoint (supported via dual-shape in 1.18.29+)
+  // OpenCode 1.x entrypoint: `{tool, sessionID, callID}` РІР‚вЂќ no agent field, so
+  // an agent-scoped ask stays silenced here.
   async server() {
     if (!(await ensureRtkUsable())) return {}
     return {
-      "tool.execute.before": (input: any, output: any) => handleToolHook(input?.tool, output?.args),
+      "tool.execute.before": (input: any, output: any) =>
+        handleToolHook(input?.tool, output?.args),
     }
   },
 }

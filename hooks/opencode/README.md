@@ -5,7 +5,7 @@
 ## Specifics
 
 - TypeScript plugin (not a shell hook)
-- Supports both **OpenCode 2.0** (`execute.before` via `{ id, setup }`) and legacy **OpenCode 1.x** (`tool.execute.before`)
+- Supports **OpenCode 2.0** (`execute.before` via `{ id, setup }`) and **OpenCode 1.x >= 1.3.4** (`tool.execute.before`)
 - Thin delegating shim: calls `rtk hook opencode` as a subprocess, and the Rust side is the single source of truth for rewrite rules
 - The Rust side judges the command against OpenCode's own permission rules
   (root and project `opencode.json`/`.jsonc`, last match wins) and answers `{}`
@@ -14,10 +14,11 @@
   ask, or blocks an allow (#4195)
 - Uses standard `node:child_process.execFile` (compatible with OpenCode CLI, OpenCode Desktop/Electron, and Windows; zero Bun/zx dependencies)
 - Passes the command as a single argv element, never through a shell
-- Robust binary discovery via `RTK_BIN`, system `PATH`, `~/.cargo/bin`, `~/.local/bin`, and Homebrew
-- Probes the resolved binary with `rtk --version` once per session (cached); a binary that will not answer is treated as absent
-- Requires **rtk >= 0.51.1**, the first release carrying `rtk hook opencode`. Older rtk versions have no such subcommand, so the plugin disables itself with a warning rather than silently passing every command through
+- Resolves rtk from the system `PATH` only (`PATHEXT` on Windows), and skips a PATH entry that is a directory. OpenCode's shell tool runs with OpenCode's own `PATH` and never sources `.profile`/`.bashrc`, so an rtk found outside `PATH` cannot be spawned as a bare `rtk …` — see #4462
+- Probes the resolved binary once per session with `rtk hook opencode --help` (cached): exit 0 means the subcommand is there, exit 2 means it predates it, and a broken or wrong-arch binary fails to spawn. Not a version number — a develop build reports `rtk 0.49.0` and so does a release that lacks the subcommand
+- Passes OpenCode 2.x's `event.agent` as `rtk hook opencode --agent <name>`, so an `agent.<name>.permission` ask or deny is judged against the agent that runs the command. OpenCode 1.x sends no agent field, so that path stays root-only
 - Honours `RTK_DISABLED=1`
 - Mutates command in-place (`event.input.command` in v2, `output.args.command` in v1) if the answered rewrite differs from the original
 - Any failure — non-zero exit, timeout, non-JSON stdout, missing binary — passes the command through unchanged
 - Installed to `~/.config/opencode/plugins/rtk.ts` by `rtk init -g --opencode`
+- Tests: `node --test hooks/opencode/rtk.test.mjs`

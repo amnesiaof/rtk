@@ -130,7 +130,7 @@ rtk init --global --gemini
 rtk init --global --opencode
 ```
 
-Installs the Claude Code setup and creates `~/.config/opencode/plugins/rtk.ts`. The plugin registers both OpenCode 2.0 (`execute.before`) and OpenCode 1.x >= 1.3.4 (`tool.execute.before`) hooks. OpenCode <= 1.3.3 cannot load that file — its loader calls every export as a function — so init installs `rtk-legacy.ts` there instead, based on `opencode --version`. Pass `--opencode-legacy` to force the legacy file.
+Installs the Claude Code setup and creates `~/.config/opencode/plugins/rtk.ts`. The plugin registers both OpenCode 2.0 (`execute.before`) and OpenCode 1.x (`tool.execute.before`) hooks, in one default export carrying both entrypoints. That shape needs OpenCode 1.18.29 or newer; on anything older the plugin does not load, and init says so.
 
 ### Pi
 

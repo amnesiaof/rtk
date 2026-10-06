@@ -279,7 +279,7 @@ The `allow` value is required by Codex to accept `updatedInput`; Codex still run
 
 ### OpenCode (TypeScript Plugin)
 
-Delegates to `rtk hook opencode` via `node:child_process.execFile` (supports OpenCode 2.0 and 1.x >= 1.3.4; [<= 1.3.3](opencode/README.md) gets a legacy plugin). The Rust side owns the rewrite rules and the permission verdict; the plugin only carries it. The hook must be awaited — `args.command = …` after the call returns has nothing left to rewrite:
+Delegates to `rtk hook opencode` via `node:child_process.execFile` (supports [OpenCode 2.0 and 1.x >= 1.18.29](opencode/README.md)). The Rust side owns the rewrite rules and the permission verdict; the plugin only carries it. The hook must be awaited — `args.command = …` after the call returns has nothing left to rewrite:
 
 ```typescript
 const tool = String(input?.tool ?? "").toLowerCase()

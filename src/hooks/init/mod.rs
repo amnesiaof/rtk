@@ -51,6 +51,7 @@ use cursor::{
 };
 use gemini::uninstall_gemini;
 use instructions_agents::{run_cline_mode, run_windsurf_mode};
+pub(crate) use opencode::set_opencode_legacy_override;
 use opencode::{
     opencode_plugin_path, remove_opencode_plugin, resolve_opencode_dir, run_opencode_only_mode,
 };

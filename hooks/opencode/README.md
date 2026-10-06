@@ -6,6 +6,7 @@
 
 - TypeScript plugin (not a shell hook)
 - Supports **OpenCode 2.0** (`execute.before` via `{ id, setup }`) and **OpenCode 1.x >= 1.3.4** (`tool.execute.before`)
+- OpenCode **<= 1.3.3** gets [`rtk-legacy.ts`](rtk-legacy.ts) instead: those loaders call every export as `fn(input)`, which the object `rtk.ts` default-exports is not (1.1.4 exits 1 at startup, 1.3.3 logs `failed to load plugin`). `rtk init -g --opencode` picks the file from `opencode --version`; `--opencode-legacy` forces the legacy one, and an absent or unparsable OpenCode gets the current plugin
 - Thin delegating shim: calls `rtk hook opencode` as a subprocess, and the Rust side is the single source of truth for rewrite rules
 - The Rust side judges the command against OpenCode's own permission rules
   (root and project `opencode.json`/`.jsonc`, last match wins) and answers `{}`

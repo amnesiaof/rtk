@@ -401,6 +401,12 @@ enum Commands {
         #[arg(long)]
         opencode: bool,
 
+        /// Install the legacy OpenCode plugin (OpenCode <= 1.3.3, which cannot
+        /// load the object-shaped plugin). Implied when `opencode --version`
+        /// reports <= 1.3.3.
+        #[arg(long)]
+        opencode_legacy: bool,
+
         /// Initialize for Gemini CLI instead of Claude Code
         #[arg(long)]
         gemini: bool,
@@ -2552,6 +2558,7 @@ fn run_cli() -> Result<i32> {
             codex,
             copilot,
             dry_run,
+            opencode_legacy,
         } => {
             let ctx = hooks::init::InitContext {
                 verbose: cli.verbose,
@@ -2622,6 +2629,9 @@ fn run_cli() -> Result<i32> {
                 hooks::init::run_vibe_mode(global, hook_only, patch_mode, ctx)?;
             } else {
                 let install_opencode = opencode;
+                // OpenCode <= 1.3.3 cannot load the object-shaped plugin, so the
+                // legacy file is chosen there instead (and always with the flag).
+                hooks::init::set_opencode_legacy_override(opencode_legacy);
                 let install_cursor = agent == Some(AgentTarget::Cursor);
                 let install_windsurf = agent == Some(AgentTarget::Windsurf);
                 let install_cline = agent == Some(AgentTarget::Cline);

@@ -132,16 +132,6 @@ export function runHookOpencode(
   })
 }
 
-/**
- * True when the command already invokes rtk.
- *
- * Rewriting `rtk git status` would ask rtk about itself, and the rewrite can
- * only make such a command longer.
- */
-export function isAlreadyRtk(command: string): boolean {
-  return /^\s*rtk\s/.test(command)
-}
-
 export async function tryRewriteCommand(
   toolName: string,
   command: unknown
@@ -150,7 +140,6 @@ export async function tryRewriteCommand(
   if ((tool !== "bash" && tool !== "shell") || typeof command !== "string" || !command.trim()) {
     return null
   }
-  if (isAlreadyRtk(command)) return null
 
   // `RTK_DISABLED=1` is the documented escape hatch (hooks/README.md) and the
   // escape hatch other hooks honour -- hooks/pi/rtk.ts checks the same env

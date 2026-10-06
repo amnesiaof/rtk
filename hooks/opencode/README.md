@@ -17,7 +17,7 @@
 - Robust binary discovery via `RTK_BIN`, system `PATH`, `~/.cargo/bin`, `~/.local/bin`, and Homebrew
 - Probes the resolved binary with `rtk --version` once per session (cached); a binary that will not answer is treated as absent
 - Requires **rtk >= 0.51.1**, the first release carrying `rtk hook opencode`. Older rtk versions have no such subcommand, so the plugin disables itself with a warning rather than silently passing every command through
-- Skips commands that already invoke `rtk`, and honours `RTK_DISABLED=1`
+- Honours `RTK_DISABLED=1`
 - Mutates command in-place (`event.input.command` in v2, `output.args.command` in v1) if the answered rewrite differs from the original
 - Any failure — non-zero exit, timeout, non-JSON stdout, missing binary — passes the command through unchanged
 - Installed to `~/.config/opencode/plugins/rtk.ts` by `rtk init -g --opencode`

@@ -546,7 +546,7 @@ pub(crate) fn redirect_has_file_target(tokens: &[ParsedToken], i: usize) -> bool
 /// | background `&` | splits (Shellism boundary) | does not split | splits |
 /// | `( ... )` grouping | splits (Shellism boundary) | does not split | does not split standalone |
 /// | trailing redirect | truncates the segment | kept | kept (rewritten output preserves it) |
-/// | leading redirect | stepped over, command kept | kept | kept |
+/// | leading redirect | stepped over with its attached operand, rest kept | kept | kept |
 /// | lone `\r` (no following `\n`) | splits | does not split | does not split |
 ///
 /// Like [`split_on_operators`] but also breaks on newline, background `&`,
@@ -585,14 +585,13 @@ pub fn split_for_permissions(cmd: &str) -> Vec<&str> {
             seg_has_text = false;
         } else if tok.kind == TokenKind::Redirect {
             if !seg_has_text {
-                // A redirect may precede the command it applies to, and that
-                // command still has to reach the deny rules, so step over the
-                // redirect instead of truncating the segment at it.
-                //
-                // The operand runs to the first gap or boundary. `>$HOME/x` is
-                // several tokens but one word, and a boundary ends the operand
-                // even with no gap — in `>a|rm -rf /` the `|` starts the next
-                // command rather than continuing the filename.
+                // A redirect before the command word is stepped over instead of
+                // truncating the segment at it, together with the operand
+                // attached to the operator: the tokens that follow it with no
+                // gap, up to a boundary. `>$HOME/x` is several tokens but one
+                // word, and in `>a|rm -rf /` the `|` starts the next command
+                // rather than continuing the filename. A token after a gap
+                // belongs to the segment.
                 let mut end = tok.offset + tok.value.len();
                 let mut next = i + 1;
                 while let Some(part) = tokens.get(next) {

@@ -143,6 +143,8 @@ enum Commands {
 
     /// Git commands with compact output
     Git {
+        // Backticks would leak into clap's --help text, so silence rustdoc here instead.
+        #[allow(rustdoc::invalid_html_tags)]
         /// Change to directory before executing (like git -C <path>, can be repeated)
         #[arg(short = 'C', action = clap::ArgAction::Append)]
         directory: Vec<String>,
@@ -1609,6 +1611,7 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
     }
 
     let raw_command = args.join(" ");
+    let tracked_command = core::shell::display_command(&args);
     let error_message = core::utils::strip_ansi(&parse_error.to_string());
 
     // Start timer before execution to capture actual command runtime
@@ -1694,18 +1697,22 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
                 };
 
                 timer.track(
-                    &raw_command,
-                    &format!("rtk:toml {}", raw_command),
+                    &tracked_command,
+                    &format!("rtk:toml {}", tracked_command),
                     &combined_raw,
                     &shown,
                 );
-                core::tracking::record_parse_failure_silent(&raw_command, &error_message, true);
+                core::tracking::record_parse_failure_silent(&tracked_command, &error_message, true);
 
                 Ok(exit_code)
             }
             Err(e) => {
                 // Command not found — same behaviour as no-TOML path
-                core::tracking::record_parse_failure_silent(&raw_command, &error_message, false);
+                core::tracking::record_parse_failure_silent(
+                    &tracked_command,
+                    &error_message,
+                    false,
+                );
                 eprintln!("[rtk: {}]", e);
                 Ok(127)
             }
@@ -1721,14 +1728,21 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
 
         match status {
             Ok(s) => {
-                timer.track_passthrough(&raw_command, &format!("rtk fallback: {}", raw_command));
+                timer.track_passthrough(
+                    &tracked_command,
+                    &format!("rtk fallback: {}", tracked_command),
+                );
 
-                core::tracking::record_parse_failure_silent(&raw_command, &error_message, true);
+                core::tracking::record_parse_failure_silent(&tracked_command, &error_message, true);
 
                 Ok(core::utils::exit_code_from_status(&s, &raw_command))
             }
             Err(e) => {
-                core::tracking::record_parse_failure_silent(&raw_command, &error_message, false);
+                core::tracking::record_parse_failure_silent(
+                    &tracked_command,
+                    &error_message,
+                    false,
+                );
                 // Command not found or other OS error — single message, no duplicate Clap error
                 eprintln!("[rtk: {}]", e);
                 Ok(127)
@@ -1778,6 +1792,15 @@ enum GtCommands {
 /// e.g. `git log --format="%H %s"` → ["git", "log", "--format=%H %s"]
 fn shell_split(input: &str) -> Vec<String> {
     discover::lexer::shell_split(input)
+}
+
+/// The tracked command for `rtk proxy`: the program word is quoted like its
+/// arguments, so the row matches what the fallback records for the same argv.
+fn proxy_label(cmd_name: &str, cmd_args: &[String]) -> String {
+    let words: Vec<&str> = std::iter::once(cmd_name)
+        .chain(cmd_args.iter().map(String::as_str))
+        .collect();
+    core::shell::display_command(&words)
 }
 
 fn build_k8s_namespace_args(namespace: Option<String>, all: bool) -> Vec<String> {
@@ -2305,20 +2328,15 @@ fn run_cli() -> Result<i32> {
             repo,
             group,
             subcommand,
-            mut args,
-        } => {
-            // Append -R / -g flags at end so they don't interfere with
-            // subcommand dispatch (args[0] must be the sub-subcommand like "list")
-            if let Some(r) = repo {
-                args.push("-R".to_string());
-                args.push(r);
-            }
-            if let Some(g) = group {
-                args.push("-g".to_string());
-                args.push(g);
-            }
-            glab_cmd::run(&subcommand, &args, cli.verbose, cli.ultra_compact)?
-        }
+            args,
+        } => glab_cmd::run(
+            &subcommand,
+            &args,
+            repo.as_deref(),
+            group.as_deref(),
+            cli.verbose,
+            cli.ultra_compact,
+        )?,
 
         Commands::Aws { subcommand, args } => aws_cmd::run(&subcommand, &args, cli.verbose)?,
 
@@ -2951,10 +2969,13 @@ fn run_cli() -> Result<i32> {
                                     cmd.arg(arg);
                                 }
                                 let status = cmd.status().context("Failed to run npx prisma")?;
-                                let args_str = args.join(" ");
+                                let tracked = core::shell::with_args(
+                                    "npx",
+                                    &core::shell::display_args(&args),
+                                );
                                 timer.track_passthrough(
-                                    &format!("npx {}", args_str),
-                                    &format!("rtk npx {} (passthrough)", args_str),
+                                    &tracked,
+                                    &core::tracking::passthrough_label(&tracked),
                                 );
                                 core::utils::exit_code_from_status(&status, "npx prisma")
                             }
@@ -2965,7 +2986,10 @@ fn run_cli() -> Result<i32> {
                             .arg("prisma")
                             .status()
                             .context("Failed to run npx prisma")?;
-                        timer.track_passthrough("npx prisma", "rtk npx prisma (passthrough)");
+                        timer.track_passthrough(
+                            "npx prisma",
+                            &core::tracking::passthrough_label("npx prisma"),
+                        );
                         core::utils::exit_code_from_status(&status, "npx prisma")
                     }
                 }
@@ -3157,7 +3181,7 @@ fn run_cli() -> Result<i32> {
                     None => (
                         core::shell::direct_command(&args)
                             .context("Failed to prepare direct run command")?,
-                        core::shell::display_args(&args),
+                        core::shell::display_command(&args),
                         core::shell::program_name(&args, None).to_string(),
                     ),
                 };
@@ -3380,9 +3404,10 @@ fn run_cli() -> Result<i32> {
             let full_output = format!("{}{}", stdout, stderr);
 
             // Track usage (input = output since no filtering)
+            let label = proxy_label(&cmd_name, &cmd_args);
             timer.track(
-                &format!("{} {}", cmd_name, cmd_args.join(" ")),
-                &format!("rtk proxy {} {}", cmd_name, cmd_args.join(" ")),
+                &label,
+                &format!("rtk proxy {label}"),
                 &full_output,
                 &full_output,
             );
@@ -3510,6 +3535,19 @@ mod tests {
                 .expect("rtk <framework> <path> parses");
             assert!(is_operational_command(&cli.command), "{framework}");
         }
+    }
+
+    #[test]
+    fn proxy_label_quotes_the_program_like_the_fallback() {
+        let argv = vec!["/p/My Tools/run".to_string(), "x".to_string()];
+        assert_eq!(proxy_label(&argv[0], &argv[1..]), "'/p/My Tools/run' x");
+        // run_fallback records display_command over the whole argv.
+        assert_eq!(
+            proxy_label(&argv[0], &argv[1..]),
+            core::shell::display_command(&argv)
+        );
+        assert_eq!(proxy_label("echo", &[]), "echo");
+        assert_eq!(proxy_label("FOO=1", &["x".to_string()]), "'FOO=1' x");
     }
 
     #[test]
